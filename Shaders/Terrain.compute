@@ -1,0 +1,18 @@
+#include "TraverseQuadTree.hlsl"
+#include "BuildLodMap.hlsl"
+#include "BuildPatchBuffer.hlsl"
+
+#pragma multi_compile_local __ ENABLE_VFC
+#pragma multi_compile_local __ ENABLE_HIZ
+#pragma multi_compile_local __ ENABLE_NODE_CULLING
+#pragma multi_compile_local __ ENABLE_PATCH_CULLING
+#pragma multi_compile_local __ ENABLE_CULLING_STAT
+#pragma multi_compile_local __ ENABLE_NODE_BOX_DEBUG
+#pragma multi_compile_local __ ENABLE_PATCH_BOX_DEBUG
+#pragma multi_compile_local __ ENABLE_TWO_PASS_HIZ
+#pragma multi_compile_local __ FIRST_PASS_OF_TWO_PASS_HIZ
+
+#pragma kernel TraverseQuadTree
+#pragma kernel TraverseQuadTreeOneDispatch
+#pragma kernel BuildLodMap
+#pragma kernel BuildPatchBuffer

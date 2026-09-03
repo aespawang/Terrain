@@ -1,0 +1,146 @@
+#pragma kernel ReduceHiZ
+#pragma kernel ReduceHiZMultiPass
+
+#pragma multi_compile_local __ ENABLE_MSAA
+#pragma multi_compile_local __ ENABLE_REDUCE_HIZ_MULTIPASS
+
+#define GROUP_SIZE 8
+
+#if defined(ENABLE_MSAA)
+Texture2DMS<float> _DepthTexMSAA;
+int _SampleCount;
+#else
+Texture2D<float> _InTex;
+int _SrcMipIndex;
+#endif
+
+RWTexture2D<float> _OutMip1; // Mip _SrcMipIndex + 1
+#if defined(ENABLE_REDUCE_HIZ_MULTIPASS)
+RWTexture2D<float> _OutMip2; // Mip _SrcMipIndex + 2
+RWTexture2D<float> _OutMip3; // Mip _SrcMipIndex + 3
+RWTexture2D<float> _OutMip4; // Mip _SrcMipIndex + 4
+#endif
+
+groupshared float _SharedDepthCache[GROUP_SIZE][GROUP_SIZE];
+
+int4 _SrcDstTexSize;
+
+float GetPixelDepth(int2 coord)
+{
+    // only for msaa depth to hiz mip0
+    #if defined(ENABLE_MSAA)
+    float minDepth = 1.0;
+    for (int i = 0; i < _SampleCount; ++i)
+    {
+        float val = _DepthTexMSAA.Load(coord, i);
+        minDepth = min(minDepth, val);
+    }
+    return minDepth;
+    #else
+    return _InTex.mips[_SrcMipIndex][coord];
+    #endif
+}
+
+// reduce hiz once per dispatch
+[numthreads(GROUP_SIZE, GROUP_SIZE, 1)]
+void ReduceHiZ(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= (uint)_SrcDstTexSize.z || id.y >= (uint)_SrcDstTexSize.w) return;
+
+    int src_x = clamp(id.x * 2, 0, _SrcDstTexSize.x - 1);
+    int src_y = clamp(id.y * 2, 0, _SrcDstTexSize.y - 1);
+
+    float4 sampledDepth4;
+    sampledDepth4.x = GetPixelDepth(int2(src_x, src_y));
+    sampledDepth4.y = GetPixelDepth(int2(clamp(src_x + 1, 0, _SrcDstTexSize.x - 1), src_y));
+    sampledDepth4.z = GetPixelDepth(int2(src_x, clamp(src_y + 1, 0, _SrcDstTexSize.y - 1)));
+    sampledDepth4.w = GetPixelDepth(int2(clamp(src_x + 1, 0, _SrcDstTexSize.x - 1),
+                                         clamp(src_y + 1, 0, _SrcDstTexSize.y - 1)));
+
+    _OutMip1[id.xy] = min(min(sampledDepth4.x, sampledDepth4.y), min(sampledDepth4.z, sampledDepth4.w));
+}
+
+// reduce hiz 4 times per dispatch
+[numthreads(GROUP_SIZE, GROUP_SIZE, 1)]
+void ReduceHiZMultiPass(uint3 dispatchThreadId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID)
+{
+    #if defined(ENABLE_REDUCE_HIZ_MULTIPASS)
+    
+    // need clamp instead of return since we use group barrier op
+    dispatchThreadId.x = clamp(dispatchThreadId.x, 0, _SrcDstTexSize.z - 1);
+    dispatchThreadId.y = clamp(dispatchThreadId.y, 0, _SrcDstTexSize.w - 1);
+
+    if (groupThreadId.x == 0 && groupThreadId.y == 0 && groupThreadId.z == 0)
+    {
+        for (int i = 0; i < GROUP_SIZE; ++i)
+            for (int j  = 0; j < GROUP_SIZE; ++j)
+                _SharedDepthCache[groupThreadId.x][groupThreadId.y] = 0;
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+    
+    int src_x = clamp(dispatchThreadId.x * 2, 0, _SrcDstTexSize.x - 1);
+    int src_y = clamp(dispatchThreadId.y * 2, 0, _SrcDstTexSize.y - 1);
+
+    float4 sampledDepth4;
+    sampledDepth4.x = GetPixelDepth(int2(src_x, src_y));
+    sampledDepth4.y = GetPixelDepth(int2(clamp(src_x + 1, 0, _SrcDstTexSize.x - 1), src_y));
+    sampledDepth4.z = GetPixelDepth(int2(src_x, clamp(src_y + 1, 0, _SrcDstTexSize.y - 1)));
+    sampledDepth4.w = GetPixelDepth(int2(clamp(src_x + 1, 0, _SrcDstTexSize.x - 1),
+                                         clamp(src_y + 1, 0, _SrcDstTexSize.y - 1)));
+
+    float minDepth = min(min(sampledDepth4.x, sampledDepth4.y), min(sampledDepth4.z, sampledDepth4.w));
+    _OutMip1[dispatchThreadId.xy] = minDepth;
+    _SharedDepthCache[groupThreadId.x][groupThreadId.y] = minDepth;
+    GroupMemoryBarrierWithGroupSync();
+
+    uint2 curSrcTexSize = _SrcDstTexSize.zw;
+    if (curSrcTexSize.x == 1 && curSrcTexSize.y == 1) return;
+    if ((groupThreadId.x & 1) == 0 && (groupThreadId.y & 1) == 0)
+    {
+        float4 sharedDepthSampled4;
+        sharedDepthSampled4.x = _SharedDepthCache[groupThreadId.x][groupThreadId.y];
+        sharedDepthSampled4.y = _SharedDepthCache[groupThreadId.x + 1][groupThreadId.y];
+        sharedDepthSampled4.z = _SharedDepthCache[groupThreadId.x][groupThreadId.y + 1];
+        sharedDepthSampled4.w = _SharedDepthCache[groupThreadId.x + 1][groupThreadId.y + 1];
+
+        float minSharedDepth = min(min(sharedDepthSampled4.x, sharedDepthSampled4.y), min(sharedDepthSampled4.z, sharedDepthSampled4.w));
+        _OutMip2[dispatchThreadId.xy / 2] = minSharedDepth;
+        _SharedDepthCache[groupThreadId.x][groupThreadId.y] = minSharedDepth;
+    }
+    GroupMemoryBarrierWithGroupSync();
+    
+    curSrcTexSize /= 2;
+    if (curSrcTexSize.x == 1 && curSrcTexSize.y == 1) return;
+    if ((groupThreadId.x & 3) == 0 && (groupThreadId.y & 3) == 0)
+    {
+        float4 sharedDepthSampled4;
+        sharedDepthSampled4.x = _SharedDepthCache[groupThreadId.x][groupThreadId.y];
+        sharedDepthSampled4.y = _SharedDepthCache[groupThreadId.x + 2][groupThreadId.y];
+        sharedDepthSampled4.z = _SharedDepthCache[groupThreadId.x][groupThreadId.y + 2];
+        sharedDepthSampled4.w = _SharedDepthCache[groupThreadId.x + 2][groupThreadId.y + 2];
+
+        float minSharedDepth = min(min(sharedDepthSampled4.x, sharedDepthSampled4.y), min(sharedDepthSampled4.z, sharedDepthSampled4.w));
+        _OutMip3[dispatchThreadId.xy / 4] = minSharedDepth;
+        _SharedDepthCache[groupThreadId.x][groupThreadId.y] = minSharedDepth;
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    curSrcTexSize /= 2;
+    if (curSrcTexSize.x == 1 && curSrcTexSize.y == 1) return;
+    if ((groupThreadId.x & 7) == 0 && (groupThreadId.y & 7) == 0)
+    {
+        float4 sharedDepthSampled4;
+        sharedDepthSampled4.x = _SharedDepthCache[groupThreadId.x][groupThreadId.y];
+        sharedDepthSampled4.y = _SharedDepthCache[groupThreadId.x + 4][groupThreadId.y];
+        sharedDepthSampled4.z = _SharedDepthCache[groupThreadId.x][groupThreadId.y + 4];
+        sharedDepthSampled4.w = _SharedDepthCache[groupThreadId.x + 4][groupThreadId.y + 4];
+
+        float minSharedDepth = min(min(sharedDepthSampled4.x, sharedDepthSampled4.y), min(sharedDepthSampled4.z, sharedDepthSampled4.w));
+        _OutMip4[dispatchThreadId.xy / 8] = minSharedDepth;
+        _SharedDepthCache[groupThreadId.x][groupThreadId.y] = minSharedDepth;
+    }
+
+    #endif
+    
+}

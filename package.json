@@ -1,0 +1,14 @@
+{
+  "name": "com.gaia.gaia-terrain",
+  "version": "0.3.0",
+  "displayName": "Gaia Terrain",
+  "description": "Gaia Terrain",
+  "unity": "2022.3",
+  "unityRelease": "50f1",
+  "documentationUrl": "https://github.com/ChenJiaming5613/GaiaTerrain/wiki",
+  "dependencies": {
+    "com.unity.render-pipelines.core": "14.0.11",
+    "com.unity.render-pipelines.universal": "14.0.11",
+    "com.unity.mathematics": "1.2.6"
+  }
+}
