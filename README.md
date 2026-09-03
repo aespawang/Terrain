@@ -9,7 +9,7 @@
 输入项目的git链接下载安装即可
 
 ```plain
-https://github.com/ChenJiaming5613/GaiaTerrain.git
+https://github.com/aespawang/Terrain.git
 ```
 
 # For Development
